@@ -4,6 +4,7 @@ from werkzeug.security import generate_password_hash
 from datetime import datetime
 import os
 import boto3
+import pymysql
 
 from config import Config, allowed_file
 from database.db import fetch_one, fetch_all, execute_query
@@ -103,7 +104,13 @@ def login():
         password = request.form.get('password', '')
         role = request.form.get('role', '')
         
-        user = auth_model.verify_login(email, password, role)
+        try:
+            user = auth_model.verify_login(email, password, role)
+        except pymysql.MySQLError:
+            app.logger.exception("Database connection failed during login")
+            flash("Database server is not running. Start MySQL and try again.", "danger")
+            return render_template('login.html'), 503
+
         if user:
             # Set session parameters
             session['user_id'] = user['id']
@@ -1218,7 +1225,7 @@ def home():
 
 if __name__ == "__main__":
     seed_database()
-    app.run(debug=True)
+    app.run(debug=os.environ.get('FLASK_DEBUG', '0') == '1')
 
 
 
