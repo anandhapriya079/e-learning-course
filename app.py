@@ -3,8 +3,6 @@ from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash
 from datetime import datetime
 import os
-import boto3
-import pymysql
 
 from config import Config, allowed_file
 from database.db import fetch_one, fetch_all, execute_query
@@ -16,12 +14,8 @@ import models.ai_helper as ai_model
 import models.study_buddy as buddy_model
 import models.gamification as gamification_model
 
-
 app = Flask(__name__)
 app.config.from_object(Config)
-
-s3 = boto3.client('s3')
-BUCKET_NAME = "lms-bucketstorage-s3"
 
 @app.context_processor
 def inject_gamification():
@@ -104,13 +98,7 @@ def login():
         password = request.form.get('password', '')
         role = request.form.get('role', '')
         
-        try:
-            user = auth_model.verify_login(email, password, role)
-        except pymysql.MySQLError:
-            app.logger.exception("Database connection failed during login")
-            flash("Database server is not running. Start MySQL and try again.", "danger")
-            return render_template('login.html'), 503
-
+        user = auth_model.verify_login(email, password, role)
         if user:
             # Set session parameters
             session['user_id'] = user['id']
@@ -366,24 +354,11 @@ def student_ai_chat():
     if course_id:
         try:
             course_details = course_model.get_course_by_id(int(course_id))
-            if course_details:
-                course_details['materials'] = course_model.get_materials_by_course(course_details['id']) or []
         except ValueError:
             pass
             
-    # Get RAG-enhanced response with sources and confidence
     ai_response = ai_model.ask_ai_assistant(message, course_details)
-    
-    # Format response with RAG metadata
-    response_data = {
-        'response': ai_response.get('response') if isinstance(ai_response, dict) else ai_response,
-        'uses_rag': ai_response.get('uses_rag', False) if isinstance(ai_response, dict) else False,
-        'sources': ai_response.get('sources', []) if isinstance(ai_response, dict) else [],
-        'confidence': ai_response.get('confidence', 0) if isinstance(ai_response, dict) else 0,
-        'chunks_used': ai_response.get('chunks_used', 0) if isinstance(ai_response, dict) else 0
-    }
-    
-    return jsonify(response_data)
+    return jsonify({'response': ai_response})
 
 @app.route('/student/profile', methods=['GET', 'POST'])
 @login_required
@@ -500,18 +475,7 @@ def student_play_level(level_id):
     materials_context = ", ".join([f"{m['title']}: {m['description']}" for m in materials])
     course_context = f"Course: {level['course_title']}. Description: {level['course_description']}. Level {level['level_number']}: {level['title']}. Details: {level['description']}. Content: {materials_context}"
     
-    # Regenerate questions when retrying after a failed attempt
-    failed_attempt = fetch_one(
-        "SELECT id FROM challenge_results WHERE student_id = %s AND level_id = %s AND passed = FALSE",
-        (session['user_id'], level_id)
-    )
-    if failed_attempt:
-        if not gamification_model.generate_and_save_quiz(level_id, course_context):
-            flash("No questions could be generated. Please try again later.", "warning")
-            return redirect(url_for('student_adventure'))
-        questions = fetch_all("SELECT * FROM daily_challenges WHERE level_id = %s", (level_id,))
-    else:
-        questions = gamification_model.get_quiz_for_level(level_id, course_context)
+    questions = gamification_model.get_quiz_for_level(level_id, course_context)
     if not questions:
         flash("No questions could be generated. Please try again later.", "warning")
         return redirect(url_for('student_adventure'))
@@ -565,37 +529,24 @@ def student_submit_quiz():
             'is_correct': is_correct
         })
         
-    total_count = len(questions)
-    score_pct = int((correct_count / total_count) * 100)
-    # Pass requires more than 3 correct out of 5 (i.e. 4/5 or 5/5)
-    passed = correct_count > 3
+    score_pct = int((correct_count / len(questions)) * 100)
+    passed = (score_pct >= 60)
     
     # Award XP
     xp_earned = 10 # Base XP for attempting
-    if correct_count == total_count:
+    if score_pct == 100:
         xp_earned += 50 # Bonus XP for perfect score
     elif passed:
         xp_earned += 20 # Bonus XP for passing
         
     gamification_model.award_xp(student_id, xp_earned)
     
-    profile_before = gamification_model.get_student_stats(student_id)
-    old_streak = profile_before['current_streak']
-    streak_incremented = False
-    current_streak = old_streak
-    streak_message = "You need more than 3 correct answers to maintain your streak."
-    
-    # Increment daily streak only on successful quiz completion (4/5 or 5/5)
+    # Increment daily streak only if they passed the quiz (>= 60%)
     if passed:
         try:
-            streak_incremented, current_streak = gamification_model.increment_daily_streak(student_id)
-            if streak_incremented:
-                streak_message = f"Congratulations! Your streak has increased to {current_streak} days."
-            else:
-                streak_message = f"Your streak remains at {current_streak} days today."
+            gamification_model.increment_daily_streak(student_id)
         except Exception as e:
             app.logger.error(f"Error incrementing daily streak: {e}")
-            streak_message = f"Your streak remains at {current_streak} days."
     
     # Record result
     execute_query("DELETE FROM challenge_results WHERE student_id = %s AND level_id = %s", (student_id, level_id))
@@ -619,12 +570,9 @@ def student_submit_quiz():
         level=level,
         score=score_pct,
         correct_count=correct_count,
-        total_count=total_count,
+        total_count=len(questions),
         passed=passed,
         xp_earned=xp_earned,
-        current_streak=current_streak,
-        streak_incremented=streak_incremented,
-        streak_message=streak_message,
         results=results
     )
 
@@ -773,28 +721,11 @@ def faculty_upload_material(course_id):
         filename = secure_filename(f"note_{course_id}_{timestamp}.{ext}")
         file_path = os.path.join(MATERIALS_DIR, filename)
         file.save(file_path)
-        s3.upload_file(
-            file_path,
-            BUCKET_NAME,
-            filename
-        )
         
         # Add to DB
         mat_id = course_model.upload_material(course_id, title, description, filename)
         if mat_id:
             flash("Study material uploaded successfully!", "success")
-            
-            # ─── TRIGGER RAG PROCESSING ───
-            try:
-                rag_result = rag_helper.process_course_material(mat_id, course_id, file_path, title)
-                if rag_result.get('success'):
-                    flash(f"RAG: Created {rag_result['chunks_created']} searchable chunks from your material.", "info")
-                else:
-                    app.logger.error(f"RAG processing failed: {rag_result.get('error')}")
-                    flash("Material uploaded but RAG processing failed. Contact admin if issues persist.", "warning")
-            except Exception as e:
-                app.logger.error(f"RAG processing error: {str(e)}")
-                # Don't fail the upload, just log the error
             
             # Send notification to all students enrolled in this course
             enrollments = fetch_all("SELECT student_id FROM enrollments WHERE course_id = %s", (course_id,))
@@ -1217,15 +1148,10 @@ def seed_database():
     except Exception as e:
         print(f"[AUTO-SEEDER WARNING] Database seeding checks skipped. Ensure MySQL is running and schema.sql is imported. Error details: {e}")
 
+# Call seeder on startup
+#seed_database()
 
 
-@app.route("/")
-def home():
-    return "LMS Running"
-
-if __name__ == "__main__":
-    seed_database()
-    app.run(debug=os.environ.get('FLASK_DEBUG', '0') == '1')
-
-
-
+if __name__ == '__main__':
+    # Running locally on port 5000
+    app.run(debug=True, host='127.0.0.1', port=5000)
