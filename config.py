@@ -1,12 +1,8 @@
 import os
 
-
 class Config:
     # Flask configuration
-    SECRET_KEY = os.environ.get(
-        "SECRET_KEY",
-        "lms_secret_key_2026"
-    )
+    SECRET_KEY = os.environ.get("SECRET_KEY", "lms_secret_key_2026")
 
     # MySQL Database configuration
     DB_HOST = os.environ.get("DB_HOST", "localhost")
@@ -14,16 +10,10 @@ class Config:
     DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
     DB_NAME = os.environ.get("DB_NAME", "lms_db")
 
-    # Upload configuration
+    # Upload configurations
     BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-
-    UPLOAD_FOLDER = os.path.join(
-        BASE_DIR,
-        "static",
-        "uploads"
-    )
-
-    MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10 MB
+    UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
+    MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB limit
 
     # Allowed file extensions
     ALLOWED_EXTENSIONS = {
