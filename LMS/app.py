@@ -5,7 +5,7 @@ from datetime import datetime
 import os
 
 from config import Config, allowed_file
-from database.db import fetch_one, fetch_all, execute_query
+from database.db import fetch_one, fetch_all, execute_query, initialize_database
 import models.auth as auth_model
 import models.course as course_model
 import models.assignment as assignment_model
@@ -16,6 +16,8 @@ import models.gamification as gamification_model
 
 app = Flask(__name__)
 app.config.from_object(Config)
+
+initialize_database()
 
 @app.context_processor
 def inject_gamification():

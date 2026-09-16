@@ -1,6 +1,32 @@
 import pymysql
 import pymysql.cursors
+import os
+import re
 from config import Config
+
+
+def initialize_database():
+    """Create missing LMS tables when explicitly enabled for first deployment."""
+    if os.environ.get("AUTO_INIT_DB") != "1":
+        return
+
+    with open(os.path.join(Config.BASE_DIR, "schema.sql"), encoding="utf-8") as schema_file:
+        schema = schema_file.read()
+
+    schema = re.sub(r"--.*", "", schema)
+    statements = [
+        statement.strip()
+        for statement in schema.split(";")
+        if statement.strip() and not statement.strip().upper().startswith(("CREATE DATABASE", "USE "))
+    ]
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            for statement in statements:
+                cursor.execute(statement)
+    finally:
+        connection.close()
 
 def get_db_connection():
     """
@@ -9,6 +35,7 @@ def get_db_connection():
     """
     return pymysql.connect(
         host=Config.DB_HOST,
+        port=Config.DB_PORT,
         user=Config.DB_USER,
         password=Config.DB_PASSWORD,
         database=Config.DB_NAME,
